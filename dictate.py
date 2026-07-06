@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Push-to-talk dictation for Linux/X11.
+"""Push-to-talk dictation for Linux and Windows.
 
 Hold Right Ctrl to record from the microphone; release to transcribe
 locally with faster-whisper and type the result into the focused window
-via xdotool.
+(xdotool on Linux/X11, direct key injection via pynput on Windows).
 """
 
 import argparse
@@ -28,28 +28,60 @@ POSTROLL_SECONDS = 0.3  # keep recording briefly after release; users let go mid
 MIN_UTTERANCE_SECONDS = 0.3
 
 APP_DIR = Path(__file__).resolve().parent
-AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "dictation.desktop"
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 
 
-def autostart_enabled() -> bool:
-    if not AUTOSTART_FILE.exists():
-        return False
-    return "X-GNOME-Autostart-enabled=false" not in AUTOSTART_FILE.read_text()
+if IS_WINDOWS:
+    import winreg
 
+    AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    AUTOSTART_NAME = "PushToTalkDictation"
 
-def set_autostart(enabled: bool):
-    AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
-    python = sys.executable
-    script = str(Path(__file__).resolve())
-    AUTOSTART_FILE.write_text(
-        "[Desktop Entry]\n"
-        "Type=Application\n"
-        "Name=Push-to-Talk Dictation\n"
-        "Comment=Hold Right Ctrl to dictate; local faster-whisper transcription\n"
-        f'Exec="{python}" "{script}"\n'
-        "Terminal=false\n"
-        f"X-GNOME-Autostart-enabled={'true' if enabled else 'false'}\n"
-    )
+    def autostart_enabled() -> bool:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as key:
+                winreg.QueryValueEx(key, AUTOSTART_NAME)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def set_autostart(enabled: bool):
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                # pythonw avoids a console window flashing up at every login.
+                python = Path(sys.executable).with_name("pythonw.exe")
+                if not python.exists():
+                    python = Path(sys.executable)
+                script = Path(__file__).resolve()
+                winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ, f'"{python}" "{script}"')
+            else:
+                try:
+                    winreg.DeleteValue(key, AUTOSTART_NAME)
+                except FileNotFoundError:
+                    pass
+
+else:
+    AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "dictation.desktop"
+
+    def autostart_enabled() -> bool:
+        if not AUTOSTART_FILE.exists():
+            return False
+        return "X-GNOME-Autostart-enabled=false" not in AUTOSTART_FILE.read_text()
+
+    def set_autostart(enabled: bool):
+        AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+        python = sys.executable
+        script = str(Path(__file__).resolve())
+        AUTOSTART_FILE.write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Push-to-Talk Dictation\n"
+            "Comment=Hold Right Ctrl to dictate; local faster-whisper transcription\n"
+            f'Exec="{python}" "{script}"\n'
+            "Terminal=false\n"
+            f"X-GNOME-Autostart-enabled={'true' if enabled else 'false'}\n"
+        )
 
 
 def make_icon_image() -> Image.Image:
@@ -59,14 +91,30 @@ def make_icon_image() -> Image.Image:
     return img
 
 
-def find_xdotool() -> str:
-    """System xdotool, or the local copy setup.sh extracts when sudo isn't available."""
-    local = APP_DIR / "bin" / "xdotool"
-    if shutil.which("xdotool"):
-        return "xdotool"
-    if local.exists():
-        return str(local)
-    sys.exit("xdotool not found. Run setup.sh or: sudo apt install xdotool")
+if IS_LINUX:
+    def find_typer() -> str:
+        """System xdotool, or the local copy setup.sh extracts when sudo isn't available."""
+        local = APP_DIR / "bin" / "xdotool"
+        if shutil.which("xdotool"):
+            return "xdotool"
+        if local.exists():
+            return str(local)
+        sys.exit("xdotool not found. Run setup.sh or: sudo apt install xdotool")
+
+    def type_text(typer: str, text: str):
+        subprocess.run(
+            [typer, "type", "--clearmodifiers", "--delay", "12", "--", text],
+            check=True,
+        )
+
+else:
+    _kb_controller = keyboard.Controller()
+
+    def find_typer():
+        return None  # nothing to locate; pynput injects keys directly
+
+    def type_text(typer, text: str):
+        _kb_controller.type(text)
 
 
 class Recorder:
@@ -118,13 +166,6 @@ class Recorder:
         return np.concatenate(chunks).ravel()
 
 
-def type_text(xdotool: str, text: str):
-    subprocess.run(
-        [xdotool, "type", "--clearmodifiers", "--delay", "12", "--", text],
-        check=True,
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="base", help="Whisper model size (default: base)")
@@ -135,7 +176,7 @@ def main():
                         help="pynput key name for push-to-talk (default: ctrl_r)")
     args = parser.parse_args()
 
-    xdotool = find_xdotool()
+    typer = find_typer()
     language = None if args.language == "auto" else args.language
     hotkey = getattr(keyboard.Key, args.key)
 
@@ -166,10 +207,10 @@ def main():
                 print("  (no speech detected)")
                 continue
             try:
-                type_text(xdotool, text)
+                type_text(typer, text)
                 print(f"  typed: {text}")
-            except subprocess.CalledProcessError as e:
-                print(f"  xdotool failed ({e}); text was: {text}", file=sys.stderr)
+            except Exception as e:
+                print(f"  typing failed ({e}); text was: {text}", file=sys.stderr)
 
     threading.Thread(target=transcribe_worker, daemon=True).start()
 

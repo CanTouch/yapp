@@ -55,7 +55,7 @@ fi
 
 echo ">> Installing Python packages"
 .venv/bin/pip install --quiet --upgrade pip
-.venv/bin/pip install --quiet faster-whisper sounddevice pynput numpy pystray pillow
+.venv/bin/pip install --quiet -r requirements.txt
 
 echo ">> Pre-downloading Whisper 'base' model"
 .venv/bin/python - <<'EOF'
