@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Push-to-talk dictation for Linux/X11.
+
+Hold Right Ctrl to record from the microphone; release to transcribe
+locally with faster-whisper and type the result into the focused window
+via xdotool.
+"""
+
+import argparse
+import collections
+import queue
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import numpy as np
+import pystray
+import sounddevice as sd
+from PIL import Image, ImageDraw
+from pynput import keyboard
+
+SAMPLE_RATE = 16000  # what Whisper expects
+PREROLL_SECONDS = 0.25  # audio kept from just before the key press
+POSTROLL_SECONDS = 0.3  # keep recording briefly after release; users let go mid-word
+MIN_UTTERANCE_SECONDS = 0.3
+
+APP_DIR = Path(__file__).resolve().parent
+AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "dictation.desktop"
+
+
+def autostart_enabled() -> bool:
+    if not AUTOSTART_FILE.exists():
+        return False
+    return "X-GNOME-Autostart-enabled=false" not in AUTOSTART_FILE.read_text()
+
+
+def set_autostart(enabled: bool):
+    AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+    python = sys.executable
+    script = str(Path(__file__).resolve())
+    AUTOSTART_FILE.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Push-to-Talk Dictation\n"
+        "Comment=Hold Right Ctrl to dictate; local faster-whisper transcription\n"
+        f'Exec="{python}" "{script}"\n'
+        "Terminal=false\n"
+        f"X-GNOME-Autostart-enabled={'true' if enabled else 'false'}\n"
+    )
+
+
+def make_icon_image() -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse((8, 8, 56, 56), fill=(64, 128, 220, 255))
+    return img
+
+
+def find_xdotool() -> str:
+    """System xdotool, or the local copy setup.sh extracts when sudo isn't available."""
+    local = APP_DIR / "bin" / "xdotool"
+    if shutil.which("xdotool"):
+        return "xdotool"
+    if local.exists():
+        return str(local)
+    sys.exit("xdotool not found. Run setup.sh or: sudo apt install xdotool")
+
+
+class Recorder:
+    """Keeps one InputStream open so recording starts instantly on key press.
+
+    A short pre-roll buffer catches speech that begins right as the key
+    goes down.
+    """
+
+    def __init__(self, device=None):
+        self._lock = threading.Lock()
+        self._recording = False
+        self._chunks = []
+        preroll_chunks = max(1, int(PREROLL_SECONDS * SAMPLE_RATE / 1024))
+        self._preroll = collections.deque(maxlen=preroll_chunks)
+        self._stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=1024,
+            device=device,
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def _callback(self, indata, frames, time_info, status):
+        if status:
+            print(f"  [audio] {status}", file=sys.stderr)
+        with self._lock:
+            if self._recording:
+                self._chunks.append(indata.copy())
+            else:
+                self._preroll.append(indata.copy())
+
+    def start(self):
+        with self._lock:
+            if self._recording:
+                return
+            self._chunks = list(self._preroll)
+            self._preroll.clear()
+            self._recording = True
+
+    def stop(self) -> np.ndarray:
+        with self._lock:
+            self._recording = False
+            chunks, self._chunks = self._chunks, []
+        if not chunks:
+            return np.empty(0, dtype=np.float32)
+        return np.concatenate(chunks).ravel()
+
+
+def type_text(xdotool: str, text: str):
+    subprocess.run(
+        [xdotool, "type", "--clearmodifiers", "--delay", "12", "--", text],
+        check=True,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", default="base", help="Whisper model size (default: base)")
+    parser.add_argument("--language", default="en",
+                        help="Language code, or 'auto' to detect (default: en)")
+    parser.add_argument("--device", default=None, help="sounddevice input device")
+    parser.add_argument("--key", default="ctrl_r",
+                        help="pynput key name for push-to-talk (default: ctrl_r)")
+    args = parser.parse_args()
+
+    xdotool = find_xdotool()
+    language = None if args.language == "auto" else args.language
+    hotkey = getattr(keyboard.Key, args.key)
+
+    print(f"Loading faster-whisper '{args.model}' (CPU, int8)...")
+    from faster_whisper import WhisperModel
+    model = WhisperModel(args.model, device="cpu", compute_type="int8")
+
+    recorder = Recorder(device=args.device)
+    jobs = queue.Queue()
+
+    def transcribe_worker():
+        while True:
+            audio = jobs.get()
+            duration = len(audio) / SAMPLE_RATE
+            if duration < MIN_UTTERANCE_SECONDS:
+                print(f"  (too short: {duration:.2f}s, ignored)")
+                continue
+            print(f"  transcribing {duration:.1f}s...")
+            segments, _ = model.transcribe(
+                audio,
+                language=language,
+                beam_size=5,
+                vad_filter=True,
+                condition_on_previous_text=False,
+            )
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+            if not text:
+                print("  (no speech detected)")
+                continue
+            try:
+                type_text(xdotool, text)
+                print(f"  typed: {text}")
+            except subprocess.CalledProcessError as e:
+                print(f"  xdotool failed ({e}); text was: {text}", file=sys.stderr)
+
+    threading.Thread(target=transcribe_worker, daemon=True).start()
+
+    key_held = threading.Event()
+    paused = threading.Event()
+
+    def on_press(key):
+        if paused.is_set():
+            return
+        if key == hotkey and not key_held.is_set():
+            key_held.set()
+            recorder.start()
+            print("* recording... (release to transcribe)")
+
+    def on_release(key):
+        if key == hotkey:
+            key_held.clear()
+
+            def finish():
+                time.sleep(POSTROLL_SECONDS)
+                # If the key was pressed again during the post-roll, the same
+                # recording just continues; the next release will finish it.
+                if not key_held.is_set():
+                    jobs.put(recorder.stop())
+
+            threading.Thread(target=finish, daemon=True).start()
+
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+    listener.start()
+    print(f"Ready. Hold {args.key} to dictate. Use the tray icon to pause or quit.")
+
+    def toggle_pause(icon, item):
+        if paused.is_set():
+            paused.clear()
+            print("* resumed")
+        else:
+            paused.set()
+            print("* paused")
+
+    def toggle_autostart(icon, item):
+        set_autostart(not autostart_enabled())
+
+    def quit_app(icon, item):
+        icon.stop()
+        listener.stop()
+
+    icon = pystray.Icon(
+        "dictation",
+        make_icon_image(),
+        "Push-to-Talk Dictation",
+        menu=pystray.Menu(
+            pystray.MenuItem("Paused", toggle_pause, checked=lambda item: paused.is_set()),
+            pystray.MenuItem("Start at login", toggle_autostart, checked=lambda item: autostart_enabled()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", quit_app),
+        ),
+    )
+    icon.run()
+
+
+if __name__ == "__main__":
+    main()
