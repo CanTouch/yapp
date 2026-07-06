@@ -153,9 +153,16 @@ else:
 
 
 def make_icon_image() -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    """A simple mic glyph on a rounded square, legible even at tray size."""
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.ellipse((8, 8, 56, 56), fill=(64, 128, 220, 255))
+    d.rounded_rectangle((2, 2, size - 2, size - 2), radius=16, fill=(88, 86, 214, 255))
+    fg = (255, 255, 255, 255)
+    d.rounded_rectangle((26, 12, 38, 34), radius=6, fill=fg)
+    d.arc((20, 20, 44, 44), start=20, end=160, fill=fg, width=3)
+    d.line((32, 40, 32, 48), fill=fg, width=3)
+    d.line((24, 48, 40, 48), fill=fg, width=3)
     return img
 
 

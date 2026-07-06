@@ -1,6 +1,6 @@
-faster-whisper
-sounddevice
-pynput
-numpy
-pystray
-pillow
+faster-whisper~=1.2.1
+sounddevice~=0.5.5
+pynput~=1.8.2
+numpy~=2.5.1
+pystray~=0.19.5
+pillow~=12.3.0
