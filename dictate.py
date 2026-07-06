@@ -8,12 +8,15 @@ locally with faster-whisper and type the result into the focused window
 
 import argparse
 import collections
+import datetime
+import os
 import queue
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +33,68 @@ MIN_UTTERANCE_SECONDS = 0.3
 APP_DIR = Path(__file__).resolve().parent
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
+
+
+def state_dir() -> Path:
+    """Per-user directory for logs/locks; survives across runs, not synced anywhere."""
+    if IS_WINDOWS:
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    d = base / "dictation"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+class _Tee:
+    """Duplicates writes to every non-None stream given; tolerates closed/missing ones.
+
+    Needed because autostart launches (pythonw.exe, .desktop Terminal=false)
+    have no real stdout/stderr, so print() output would otherwise vanish.
+    """
+
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s]
+
+    def write(self, data):
+        for s in self._streams:
+            try:
+                s.write(data)
+                s.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+
+def setup_logging():
+    log_file = open(state_dir() / "dictation.log", "a", buffering=1, encoding="utf-8")
+    log_file.write(f"\n--- started {datetime.datetime.now().isoformat(timespec='seconds')} ---\n")
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+
+
+_lock_handle = None  # kept open for the process lifetime; garbage-collecting it drops the lock
+
+
+def acquire_single_instance_lock():
+    global _lock_handle
+    _lock_handle = open(state_dir() / "dictation.lock", "a+b")
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            _lock_handle.seek(0)
+            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit("Another instance of the dictation app is already running.")
 
 
 if IS_WINDOWS:
@@ -176,6 +241,9 @@ def main():
                         help="pynput key name for push-to-talk (default: ctrl_r)")
     args = parser.parse_args()
 
+    setup_logging()
+    acquire_single_instance_lock()
+
     typer = find_typer()
     language = None if args.language == "auto" else args.language
     hotkey = getattr(keyboard.Key, args.key)
@@ -190,27 +258,33 @@ def main():
     def transcribe_worker():
         while True:
             audio = jobs.get()
-            duration = len(audio) / SAMPLE_RATE
-            if duration < MIN_UTTERANCE_SECONDS:
-                print(f"  (too short: {duration:.2f}s, ignored)")
-                continue
-            print(f"  transcribing {duration:.1f}s...")
-            segments, _ = model.transcribe(
-                audio,
-                language=language,
-                beam_size=5,
-                vad_filter=True,
-                condition_on_previous_text=False,
-            )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
-            if not text:
-                print("  (no speech detected)")
-                continue
             try:
-                type_text(typer, text)
-                print(f"  typed: {text}")
-            except Exception as e:
-                print(f"  typing failed ({e}); text was: {text}", file=sys.stderr)
+                duration = len(audio) / SAMPLE_RATE
+                if duration < MIN_UTTERANCE_SECONDS:
+                    print(f"  (too short: {duration:.2f}s, ignored)")
+                    continue
+                print(f"  transcribing {duration:.1f}s...")
+                segments, _ = model.transcribe(
+                    audio,
+                    language=language,
+                    beam_size=5,
+                    vad_filter=True,
+                    condition_on_previous_text=False,
+                )
+                text = " ".join(seg.text.strip() for seg in segments).strip()
+                if not text:
+                    print("  (no speech detected)")
+                    continue
+                try:
+                    type_text(typer, text)
+                    print(f"  typed: {text}")
+                except Exception as e:
+                    print(f"  typing failed ({e}); text was: {text}", file=sys.stderr)
+            except Exception:
+                # One bad utterance must not kill this thread — otherwise dictation
+                # silently stops working until the app is relaunched.
+                print("  transcription job failed:", file=sys.stderr)
+                traceback.print_exc()
 
     threading.Thread(target=transcribe_worker, daemon=True).start()
 
