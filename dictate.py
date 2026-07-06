@@ -168,10 +168,15 @@ def make_icon_image() -> Image.Image:
 
 if IS_LINUX:
     def find_typer() -> str:
-        """System xdotool, or the local copy setup.sh extracts when sudo isn't available."""
-        local = APP_DIR / "bin" / "xdotool"
+        """System xdotool, a PyInstaller-bundled copy, or the local one setup.sh
+        extracts when sudo isn't available."""
         if shutil.which("xdotool"):
             return "xdotool"
+        if getattr(sys, "frozen", False):
+            bundled = Path(sys._MEIPASS) / "bin" / "xdotool"
+            if bundled.exists():
+                return str(bundled)
+        local = APP_DIR / "bin" / "xdotool"
         if local.exists():
             return str(local)
         sys.exit("xdotool not found. Run setup.sh or: sudo apt install xdotool")

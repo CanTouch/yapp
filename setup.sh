@@ -21,21 +21,8 @@ if [ ${#missing_pkgs[@]} -gt 0 ] && have_sudo; then
 fi
 
 # Fallback: extract xdotool from the .deb into ./bin (no root needed).
-if ! command -v xdotool >/dev/null && [ ! -x bin/xdotool ]; then
-    echo ">> No sudo; extracting xdotool locally into ./bin"
-    tmp=$(mktemp -d)
-    (cd "$tmp" && apt-get download xdotool libxdo3 >/dev/null)
-    for deb in "$tmp"/*.deb; do dpkg -x "$deb" "$tmp/x"; done
-    mkdir -p bin/lib
-    cp "$tmp"/x/usr/bin/xdotool bin/xdotool.bin
-    cp "$tmp"/x/usr/lib/x86_64-linux-gnu/libxdo.so.* bin/lib/
-    cat > bin/xdotool <<'EOF'
-#!/bin/sh
-here=$(dirname "$(readlink -f "$0")")
-LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$here/xdotool.bin" "$@"
-EOF
-    chmod +x bin/xdotool
-    rm -rf "$tmp"
+if ! command -v xdotool >/dev/null; then
+    ./scripts/fetch-xdotool.sh
 fi
 
 # --- python environment ----------------------------------------------------

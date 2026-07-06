@@ -1,0 +1,53 @@
+name: Build Linux binary
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-venv \
+            python3-gi \
+            gir1.2-gtk-3.0 \
+            gir1.2-ayatanaappindicator3-0.1 \
+            libportaudio2
+
+      - name: Fetch a relocatable xdotool to bundle
+        run: ./scripts/fetch-xdotool.sh
+
+      - name: Create virtualenv
+        run: python3 -m venv --system-site-packages .venv
+
+      - name: Install Python dependencies
+        run: |
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        run: .venv/bin/pyinstaller --noconfirm yapp.spec
+
+      - name: Archive build
+        run: tar -czf yapp-linux-x86_64.tar.gz -C dist yapp
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yapp-linux-x86_64
+          path: yapp-linux-x86_64.tar.gz
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yapp-linux-x86_64.tar.gz
