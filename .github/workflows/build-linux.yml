@@ -8,7 +8,10 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-22.04
+    # Must match the Python version requirements.txt was pinned against
+    # (currently 3.12, shipped by 24.04's system python3) - an older
+    # runner with an older system Python can't satisfy these pins.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
