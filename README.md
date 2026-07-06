@@ -67,3 +67,10 @@ Options:
 - "Start at login" writes an XDG autostart entry on Linux
   (`~/.config/autostart/dictation.desktop`) or a registry Run key on
   Windows (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+- All output is also logged to a file, since autostart launches have no
+  visible console: `~/.local/state/dictation/dictation.log` on Linux,
+  `%APPDATA%\dictation\dictation.log` on Windows. Check it first if
+  dictation seems to silently stop working.
+- Launching a second copy while one is already running exits immediately
+  ("Another instance is already running") instead of creating duplicate
+  mic streams and hotkey listeners.
