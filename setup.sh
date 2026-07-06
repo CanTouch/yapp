@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up the push-to-talk dictation tool.
+# Set up YAPP (push-to-talk dictation).
 # Safe to re-run. Needs internet; uses sudo only if available for apt installs,
 # otherwise falls back to user-local copies of everything.
 set -euo pipefail

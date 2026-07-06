@@ -1,6 +1,6 @@
-# Push-to-Talk Dictation
+# YAPP
 
-Local dictation for Linux (X11) and Windows. Hold **Right Ctrl**, speak,
+Local push-to-talk dictation for Linux (X11) and Windows. Hold **Right Ctrl**, speak,
 release — the transcription is typed into whatever window has focus.
 Everything runs on-device: faster-whisper `base` model, CPU, int8. No
 audio or text ever leaves the machine.
@@ -65,11 +65,11 @@ Options:
 - On Windows, typing is injected directly via `pynput`, so no extra
   system tool is required.
 - "Start at login" writes an XDG autostart entry on Linux
-  (`~/.config/autostart/dictation.desktop`) or a registry Run key on
+  (`~/.config/autostart/yapp.desktop`) or a registry Run key on
   Windows (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
 - All output is also logged to a file, since autostart launches have no
-  visible console: `~/.local/state/dictation/dictation.log` on Linux,
-  `%APPDATA%\dictation\dictation.log` on Windows. Check it first if
+  visible console: `~/.local/state/yapp/dictation.log` on Linux,
+  `%APPDATA%\yapp\dictation.log` on Windows. Check it first if
   dictation seems to silently stop working.
 - Launching a second copy while one is already running exits immediately
   ("Another instance is already running") instead of creating duplicate

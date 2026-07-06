@@ -1,4 +1,4 @@
-# Set up the push-to-talk dictation tool on Windows.
+# Set up YAPP (push-to-talk dictation) on Windows.
 # Safe to re-run. Requires Python 3.9+ on PATH.
 
 $ErrorActionPreference = "Stop"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push-to-talk dictation for Linux and Windows.
+"""YAPP - push-to-talk dictation for Linux and Windows.
 
 Hold Right Ctrl to record from the microphone; release to transcribe
 locally with faster-whisper and type the result into the focused window
@@ -41,7 +41,7 @@ def state_dir() -> Path:
         base = Path(os.environ.get("APPDATA", Path.home()))
     else:
         base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    d = base / "dictation"
+    d = base / "yapp"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -101,7 +101,7 @@ if IS_WINDOWS:
     import winreg
 
     AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    AUTOSTART_NAME = "PushToTalkDictation"
+    AUTOSTART_NAME = "YAPP"
 
     def autostart_enabled() -> bool:
         try:
@@ -127,7 +127,8 @@ if IS_WINDOWS:
                     pass
 
 else:
-    AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "dictation.desktop"
+    AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "yapp.desktop"
+    _OLD_AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "dictation.desktop"
 
     def autostart_enabled() -> bool:
         if not AUTOSTART_FILE.exists():
@@ -141,12 +142,14 @@ else:
         AUTOSTART_FILE.write_text(
             "[Desktop Entry]\n"
             "Type=Application\n"
-            "Name=Push-to-Talk Dictation\n"
+            "Name=YAPP\n"
             "Comment=Hold Right Ctrl to dictate; local faster-whisper transcription\n"
             f'Exec="{python}" "{script}"\n'
             "Terminal=false\n"
             f"X-GNOME-Autostart-enabled={'true' if enabled else 'false'}\n"
         )
+        # Drop the pre-rename autostart entry so we don't end up autostarting twice.
+        _OLD_AUTOSTART_FILE.unlink(missing_ok=True)
 
 
 def make_icon_image() -> Image.Image:
@@ -314,7 +317,7 @@ def main():
 
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
-    print(f"Ready. Hold {args.key} to dictate. Use the tray icon to pause or quit.")
+    print(f"YAPP ready. Hold {args.key} to dictate. Use the tray icon to pause or quit.")
 
     def toggle_pause(icon, item):
         if paused.is_set():
@@ -332,9 +335,9 @@ def main():
         listener.stop()
 
     icon = pystray.Icon(
-        "dictation",
+        "yapp",
         make_icon_image(),
-        "Push-to-Talk Dictation",
+        "YAPP - push-to-talk dictation",
         menu=pystray.Menu(
             pystray.MenuItem("Paused", toggle_pause, checked=lambda item: paused.is_set()),
             pystray.MenuItem("Start at login", toggle_autostart, checked=lambda item: autostart_enabled()),
